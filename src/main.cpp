@@ -8,6 +8,7 @@
 #define BH1750_SCL 27
 #define DHT_PIN 13
 #define DHT_TYPE DHT11
+#define SOIL_PIN 34 // Analog input
 
 // Sensor instances
 BH1750 lightMeter;
@@ -15,12 +16,12 @@ DHT dht(DHT_PIN, DHT_TYPE);
 
 void setup() {
     Serial.begin(115200);
-    delay(2000); // let ESP32 stabilize
+    delay(2000);
 
-    // Initialize I2C for BH1750
-    Wire.begin(BH1750_SDA, BH1750_SCL, 100000); // 100 kHz
+    // Initialize I2C
+    Wire.begin(BH1750_SDA, BH1750_SCL, 100000);
 
-    // Retry BH1750 init to avoid undefined error
+    // BH1750 init with retries
     int retries = 5;
     bool init_ok = false;
     while (retries-- > 0) {
@@ -31,12 +32,10 @@ void setup() {
         Serial.println("[BH1750] Init failed, retrying...");
         delay(500);
     }
-
     if (!init_ok) {
         Serial.println("[BH1750] ERROR: not found");
         while (true) delay(1000);
     }
-
     Serial.println("[BH1750] Ready");
 
     // Initialize DHT11
@@ -45,7 +44,7 @@ void setup() {
 }
 
 void loop() {
-    // Read BH1750
+    // BH1750 Reading
     float lux = lightMeter.readLightLevel();
     if (lux < 0) {
         Serial.println("[BH1750] Read error");
@@ -55,7 +54,7 @@ void loop() {
         Serial.println(" lx");
     }
 
-    // Read DHT11
+    // DHT11 Reading
     float temp = dht.readTemperature();
     float hum = dht.readHumidity();
     if (isnan(temp) || isnan(hum)) {
@@ -68,5 +67,13 @@ void loop() {
         Serial.println(" %");
     }
 
-    delay(2000); // 2 seconds between readings
+    // Soil Moisture Reading
+    int soilRaw = analogRead(SOIL_PIN);
+    int soilPercent = map(soilRaw, 4095, 0, 0, 100); // dry=0%, wet=100%
+    Serial.print("Soil Moisture: ");
+    Serial.print(soilPercent);
+    Serial.println(" %");
+
+    Serial.println("-----------------------------");
+    delay(2000);
 }
