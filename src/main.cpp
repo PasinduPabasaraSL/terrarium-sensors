@@ -3,77 +3,80 @@
 #include <BH1750.h>
 #include <DHT.h>
 
-// Pins
+/* -------------------- Pins -------------------- */
 #define BH1750_SDA 26
 #define BH1750_SCL 27
+
 #define DHT_PIN 13
 #define DHT_TYPE DHT11
-#define SOIL_PIN 34 // Analog input
 
-// Sensor instances
+#define SOIL_PIN 34
+
+/* -------------------- Soil calibration -------------------- */
+#define SOIL_DRY 3500   // adjust after testing
+#define SOIL_WET 1500   // adjust after testing
+
+/* -------------------- Sensor objects -------------------- */
 BH1750 lightMeter;
 DHT dht(DHT_PIN, DHT_TYPE);
 
+/* -------------------- Setup -------------------- */
 void setup() {
-    Serial.begin(115200);
-    delay(2000);
+  Serial.begin(115200);
+  delay(2000);
 
-    // Initialize I2C
-    Wire.begin(BH1750_SDA, BH1750_SCL, 100000);
+  /* I2C init */
+  Wire.begin(BH1750_SDA, BH1750_SCL);
 
-    // BH1750 init with retries
-    int retries = 5;
-    bool init_ok = false;
-    while (retries-- > 0) {
-        if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire)) {
-            init_ok = true;
-            break;
-        }
-        Serial.println("[BH1750] Init failed, retrying...");
-        delay(500);
+  /* BH1750 init with retry */
+  bool bh1750Ready = false;
+  for (int i = 0; i < 5; i++) {
+    if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE_2, 0x23, &Wire)) {
+      bh1750Ready = true;
+      break;
     }
-    if (!init_ok) {
-        Serial.println("[BH1750] ERROR: not found");
-        while (true) delay(1000);
-    }
-    Serial.println("[BH1750] Ready");
+    delay(500);
+  }
 
-    // Initialize DHT11
-    dht.begin();
-    Serial.println("[DHT11] Ready");
+  if (!bh1750Ready) {
+    Serial.println("{\"error\":\"BH1750 not detected\"}");
+    while (true) delay(1000);
+  }
+
+  /* DHT init */
+  dht.begin();
 }
 
+/* -------------------- Loop -------------------- */
 void loop() {
-    // BH1750 Reading
-    float lux = lightMeter.readLightLevel();
-    if (lux < 0) {
-        Serial.println("[BH1750] Read error");
-    } else {
-        Serial.print("Light: ");
-        Serial.print(lux);
-        Serial.println(" lx");
-    }
+  /* Read sensors */
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
+  float lightLux = lightMeter.readLightLevel();
+  int soilRaw = analogRead(SOIL_PIN);
 
-    // DHT11 Reading
-    float temp = dht.readTemperature();
-    float hum = dht.readHumidity();
-    if (isnan(temp) || isnan(hum)) {
-        Serial.println("[DHT11] Read error");
-    } else {
-        Serial.print("Temperature: ");
-        Serial.print(temp);
-        Serial.print(" °C, Humidity: ");
-        Serial.print(hum);
-        Serial.println(" %");
-    }
-
-    // Soil Moisture Reading
-    int soilRaw = analogRead(SOIL_PIN);
-    int soilPercent = map(soilRaw, 4095, 0, 0, 100); // dry=0%, wet=100%
-    Serial.print("Soil Moisture: ");
-    Serial.print(soilPercent);
-    Serial.println(" %");
-
-    Serial.println("-----------------------------");
+  /* Validate readings */
+  if (isnan(temperature) || isnan(humidity)) {
+    Serial.println("{\"error\":\"DHT read failed\"}");
     delay(2000);
+    return;
+  }
+
+  if (lightLux < 1) {
+    lightLux = 0;
+  }
+
+  /* Soil percentage */
+  int soilPercent = map(soilRaw, SOIL_DRY, SOIL_WET, 0, 100);
+  soilPercent = constrain(soilPercent, 0, 100);
+
+  /* Output JSON */
+  Serial.print("{");
+  Serial.print("\"temperature\":"); Serial.print(temperature, 1); Serial.print(",");
+  Serial.print("\"humidity\":"); Serial.print(humidity, 1); Serial.print(",");
+  Serial.print("\"light\":"); Serial.print(lightLux, 1); Serial.print(",");
+  Serial.print("\"soil\":"); Serial.print(soilPercent);
+  Serial.println("}");
+
+  delay(2000);
 }
