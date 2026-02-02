@@ -71,7 +71,7 @@ void wifiConnectOrRestart() {
     }
   }
 
-  Serial.println("\nWiFi connected.");
+  Serial.println("\nWiFi connected.");  
   printNetInfo();
 }
 
