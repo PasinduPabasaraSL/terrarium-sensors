@@ -33,12 +33,23 @@ const char* serverUrl = "http://10.154.223.157:3000/api/sensors";
 const uint32_t SEND_EVERY_MS = 2000;
 uint32_t lastSend = 0;
 
+/* -------------------- Pump: soil-based control -------------------- */
+// Start watering if soil% goes below this
+const int SOIL_START_WATER_BELOW = 35;
 
-/* -------------------- Pump timing -------------------- */
-const uint32_t PUMP_ON_MS  = 3000;
-const uint32_t PUMP_OFF_MS = 3000;
-uint32_t lastPumpToggle = 0;
+// Stop watering (hysteresis). Won't start again until it drops below START threshold.
+const int SOIL_STOP_WATER_AT_OR_ABOVE = 45;
+
+// Safety: pump runs only in short bursts
+const uint32_t WATER_BURST_MS = 3000;
+
+// Cooldown between bursts (prevents rapid on/off and overwatering)
+const uint32_t WATER_COOLDOWN_MS = 30000;
+
+uint32_t pumpBurstStartedAt = 0;
+uint32_t lastWateredAt = 0;
 bool pumpIsOn = false;
+bool wateringCycleActive = false; // "we are in dry-soil mode"
 
 /* -------------------- Pump helpers -------------------- */
 void pumpWrite(bool on) {
@@ -52,7 +63,6 @@ void pumpWrite(bool on) {
 
   Serial.println(on ? "Pump ON" : "Pump OFF");
 }
-
 
 void pumpOff() { pumpWrite(false); }
 void pumpOn()  { pumpWrite(true);  }
@@ -108,7 +118,10 @@ void setup() {
   pinMode(RELAY_PIN, OUTPUT);
   pumpOff();
 
+  // Optional relay/pump test on boot
   delay(500);
+  pumpOn();  delay(400);
+  pumpOff(); delay(400);
   pumpOn();  delay(400);
   pumpOff(); delay(400);
   pumpOn();  delay(400);
@@ -135,24 +148,12 @@ void setup() {
 
   dht.begin();
 
-  lastPumpToggle = millis();
+  // Ensure pump timers are initialized
+  lastWateredAt = millis();
 }
 
 void loop() {
   uint32_t nowMs = millis();
-
-  if (pumpIsOn) {
-    if (nowMs - lastPumpToggle >= PUMP_ON_MS) {
-      pumpOff();
-      lastPumpToggle = nowMs;
-    }
-  } else {
-    if (nowMs - lastPumpToggle >= PUMP_OFF_MS) {
-      pumpOn();
-      lastPumpToggle = nowMs;
-    }
-  }
-
 
   if (WiFi.status() != WL_CONNECTED) {
     wifiConnectOrRestart();
@@ -178,11 +179,41 @@ void loop() {
   int soilPercent = map(soilRaw, SOIL_DRY, SOIL_WET, 0, 100);
   soilPercent = constrain(soilPercent, 0, 100);
 
+  // -------------------- Soil-based pump control --------------------
+  // Decide if we should be in "watering needed" mode using hysteresis.
+  if (!wateringCycleActive && soilPercent <= SOIL_START_WATER_BELOW) {
+    wateringCycleActive = true;  // soil is dry, start watering cycles
+  } else if (wateringCycleActive && soilPercent >= SOIL_STOP_WATER_AT_OR_ABOVE) {
+    wateringCycleActive = false; // soil is wet enough, stop watering cycles
+    pumpOff();                   // ensure pump is off
+  }
+
+  // If we're in watering mode, run pump in bursts with cooldown
+  if (wateringCycleActive) {
+    // If pump is currently ON, turn it OFF after burst duration
+    if (pumpIsOn) {
+      if (nowMs - pumpBurstStartedAt >= WATER_BURST_MS) {
+        pumpOff();
+        lastWateredAt = nowMs;
+      }
+    } else {
+      // Pump is OFF: only start a new burst if cooldown has passed
+      if (nowMs - lastWateredAt >= WATER_COOLDOWN_MS) {
+        pumpOn();
+        pumpBurstStartedAt = nowMs;
+      }
+    }
+  } else {
+    // Not in watering mode -> pump stays OFF
+    pumpOff();
+  }
+
   String payload = "{";
   payload += "\"temperature\":" + String(temperature, 1) + ",";
   payload += "\"humidity\":" + String(humidity, 1) + ",";
   payload += "\"light\":" + String(lightLux, 1) + ",";
-  payload += "\"soil\":" + String(soilPercent);
+  payload += "\"soil\":" + String(soilPercent) + ",";
+  payload += "\"pump\":" + String(pumpIsOn ? 1 : 0);
   payload += "}";
 
   Serial.println("Sending: " + payload);
