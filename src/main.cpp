@@ -13,6 +13,10 @@
 #define DHT_TYPE DHT11
 #define SOIL_PIN 34
 
+// Pump relay
+const int RELAY_PIN = 26;
+const bool RELAY_ACTIVE_LOW = true;
+
 /* -------------------- Soil calibration -------------------- */
 #define SOIL_DRY 3500
 #define SOIL_WET 1500
@@ -23,13 +27,35 @@ DHT dht(DHT_PIN, DHT_TYPE);
 /* -------------------- WiFi + Server -------------------- */
 const char* ssid = "KGB_Mode";
 const char* password = "87654321";
-
-// IMPORTANT: use your laptop IP on same subnet
 const char* serverUrl = "http://10.154.223.157:3000/api/sensors";
 
 /* -------------------- Send interval -------------------- */
 const uint32_t SEND_EVERY_MS = 2000;
 uint32_t lastSend = 0;
+
+
+/* -------------------- Pump timing -------------------- */
+const uint32_t PUMP_ON_MS  = 3000;
+const uint32_t PUMP_OFF_MS = 3000;
+uint32_t lastPumpToggle = 0;
+bool pumpIsOn = false;
+
+/* -------------------- Pump helpers -------------------- */
+void pumpWrite(bool on) {
+  pumpIsOn = on;
+
+  if (RELAY_ACTIVE_LOW) {
+    digitalWrite(RELAY_PIN, on ? LOW : HIGH);
+  } else {
+    digitalWrite(RELAY_PIN, on ? HIGH : LOW);
+  }
+
+  Serial.println(on ? "Pump ON" : "Pump OFF");
+}
+
+
+void pumpOff() { pumpWrite(false); }
+void pumpOn()  { pumpWrite(true);  }
 
 uint8_t detectBH1750Address() {
   const uint8_t addrs[] = {0x23, 0x5C};
@@ -71,7 +97,7 @@ void wifiConnectOrRestart() {
     }
   }
 
-  Serial.println("\nWiFi connected.");  
+  Serial.println("\nWiFi connected.");
   printNetInfo();
 }
 
@@ -79,13 +105,20 @@ void setup() {
   Serial.begin(115200);
   delay(500);
 
+  pinMode(RELAY_PIN, OUTPUT);
+  pumpOff();
+
+  delay(500);
+  pumpOn();  delay(400);
+  pumpOff(); delay(400);
+  pumpOn();  delay(400);
+  pumpOff(); delay(400);
+
   wifiConnectOrRestart();
 
-  // I2C
   Wire.begin(BH1750_SDA, BH1750_SCL);
   Wire.setClock(100000);
 
-  // BH1750 detect + init
   uint8_t bhAddr = detectBH1750Address();
   if (bhAddr == 0) {
     Serial.println("{\"error\":\"BH1750 not detected\"}");
@@ -101,10 +134,26 @@ void setup() {
   }
 
   dht.begin();
+
+  lastPumpToggle = millis();
 }
 
 void loop() {
-  // keep WiFi alive
+  uint32_t nowMs = millis();
+
+  if (pumpIsOn) {
+    if (nowMs - lastPumpToggle >= PUMP_ON_MS) {
+      pumpOff();
+      lastPumpToggle = nowMs;
+    }
+  } else {
+    if (nowMs - lastPumpToggle >= PUMP_OFF_MS) {
+      pumpOn();
+      lastPumpToggle = nowMs;
+    }
+  }
+
+
   if (WiFi.status() != WL_CONNECTED) {
     wifiConnectOrRestart();
     return;
