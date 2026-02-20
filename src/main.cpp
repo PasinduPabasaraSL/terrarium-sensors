@@ -14,7 +14,7 @@
 #define SOIL_PIN 34
 
 // Pump relay
-const int RELAY_PIN = 26;
+const int RELAY_PIN = 27;
 const bool RELAY_ACTIVE_LOW = true;
 
 /* -------------------- Soil calibration -------------------- */
@@ -24,42 +24,38 @@ const bool RELAY_ACTIVE_LOW = true;
 BH1750 lightMeter;
 DHT dht(DHT_PIN, DHT_TYPE);
 
-/* -------------------- WiFi + Server -------------------- */
+/* -------------------- WiFi + Server -------------------- */ 
 const char* ssid = "KGB_Mode";
 const char* password = "87654321";
 const char* serverUrl = "http://10.154.223.157:3000/api/sensors";
 
-/* -------------------- Send interval -------------------- */
-const uint32_t SEND_EVERY_MS = 2000;
-uint32_t lastSend = 0;
+/* -------------------- Timing -------------------- */
+const uint32_t SEND_EVERY_MS = 2000;   // POST interval
+const uint32_t DHT_EVERY_MS  = 5000;   // DHT11 needs slower reads
+
+uint32_t lastSendAt = 0;
+uint32_t lastDhtAt  = 0;
+
+float lastTemp = NAN;
+float lastHum  = NAN;
 
 /* -------------------- Pump: soil-based control -------------------- */
-// Start watering if soil% goes below this
 const int SOIL_START_WATER_BELOW = 35;
-
-// Stop watering (hysteresis). Won't start again until it drops below START threshold.
 const int SOIL_STOP_WATER_AT_OR_ABOVE = 45;
 
-// Safety: pump runs only in short bursts
 const uint32_t WATER_BURST_MS = 3000;
-
-// Cooldown between bursts (prevents rapid on/off and overwatering)
 const uint32_t WATER_COOLDOWN_MS = 30000;
 
 uint32_t pumpBurstStartedAt = 0;
 uint32_t lastWateredAt = 0;
 bool pumpIsOn = false;
-bool wateringCycleActive = false; // "we are in dry-soil mode"
+bool wateringCycleActive = false;
 
-/* -------------------- Pump helpers -------------------- */
+/* -------------------- Helpers -------------------- */
 void pumpWrite(bool on) {
   pumpIsOn = on;
-
-  if (RELAY_ACTIVE_LOW) {
-    digitalWrite(RELAY_PIN, on ? LOW : HIGH);
-  } else {
-    digitalWrite(RELAY_PIN, on ? HIGH : LOW);
-  }
+  if (RELAY_ACTIVE_LOW) digitalWrite(RELAY_PIN, on ? LOW : HIGH);
+  else digitalWrite(RELAY_PIN, on ? HIGH : LOW);
 
   Serial.println(on ? "Pump ON" : "Pump OFF");
 }
@@ -119,13 +115,9 @@ void setup() {
   pumpOff();
 
   // Optional relay/pump test on boot
-  delay(500);
-  pumpOn();  delay(400);
-  pumpOff(); delay(400);
-  pumpOn();  delay(400);
-  pumpOff(); delay(400);
-  pumpOn();  delay(400);
-  pumpOff(); delay(400);
+  delay(300);
+  pumpOn();  delay(200);
+  pumpOff(); delay(200);
 
   wifiConnectOrRestart();
 
@@ -148,69 +140,85 @@ void setup() {
 
   dht.begin();
 
-  // Ensure pump timers are initialized
   lastWateredAt = millis();
+  lastSendAt = millis();
+  lastDhtAt = 0; // force DHT read on first loop
 }
 
 void loop() {
-  uint32_t nowMs = millis();
+  const uint32_t nowMs = millis();
 
+  // Keep WiFi alive
   if (WiFi.status() != WL_CONNECTED) {
     wifiConnectOrRestart();
+    delay(50);
     return;
   }
 
-  uint32_t now = millis();
-  if (now - lastSend < SEND_EVERY_MS) return;
-  lastSend = now;
+  // Read DHT slower and keep last good values
+  if (nowMs - lastDhtAt >= DHT_EVERY_MS) {
+    float t = dht.readTemperature();
+    float h = dht.readHumidity();
 
-  float temperature = dht.readTemperature();
-  float humidity = dht.readHumidity();
+    if (!isnan(t) && !isnan(h)) {
+      lastTemp = t;
+      lastHum = h;
+      Serial.printf("DHT OK: T=%.1fC H=%.1f%%\n", lastTemp, lastHum);
+    } else {
+      Serial.println("DHT read failed (keeping last values)");
+    }
+
+    lastDhtAt = nowMs;
+  }
+
+  // Send payload every SEND_EVERY_MS
+  if (nowMs - lastSendAt < SEND_EVERY_MS) return;
+  lastSendAt = nowMs;
+
+  // If we still do not have any valid DHT values, skip sending
+  if (isnan(lastTemp) || isnan(lastHum)) {
+    Serial.println("No valid DHT values yet, skipping POST");
+    return;
+  }
+
+  // Read other sensors
   float lightLux = lightMeter.readLightLevel();
-  int soilRaw = analogRead(SOIL_PIN);
-
-  if (isnan(temperature) || isnan(humidity)) {
-    Serial.println("{\"error\":\"DHT read failed\"}");
-    return;
-  }
-
   if (lightLux < 1) lightLux = 0;
 
+  int soilRaw = analogRead(SOIL_PIN);
   int soilPercent = map(soilRaw, SOIL_DRY, SOIL_WET, 0, 100);
   soilPercent = constrain(soilPercent, 0, 100);
 
-  // -------------------- Soil-based pump control --------------------
-  // Decide if we should be in "watering needed" mode using hysteresis.
+  // -------------------- Correct watering hysteresis --------------------
   if (!wateringCycleActive && soilPercent <= SOIL_START_WATER_BELOW) {
-    wateringCycleActive = true;  // soil is dry, start watering cycles
-  } else if (wateringCycleActive && soilPercent >= SOIL_STOP_WATER_AT_OR_ABOVE) {
-    wateringCycleActive = false; // soil is wet enough, stop watering cycles
-    pumpOff();                   // ensure pump is off
+    wateringCycleActive = true;
+  }
+  if (wateringCycleActive && soilPercent >= SOIL_STOP_WATER_AT_OR_ABOVE) {
+    wateringCycleActive = false;
+    pumpOff();
   }
 
-  // If we're in watering mode, run pump in bursts with cooldown
+  // Burst + cooldown logic
   if (wateringCycleActive) {
-    // If pump is currently ON, turn it OFF after burst duration
     if (pumpIsOn) {
       if (nowMs - pumpBurstStartedAt >= WATER_BURST_MS) {
         pumpOff();
         lastWateredAt = nowMs;
       }
     } else {
-      // Pump is OFF: only start a new burst if cooldown has passed
       if (nowMs - lastWateredAt >= WATER_COOLDOWN_MS) {
         pumpOn();
         pumpBurstStartedAt = nowMs;
       }
     }
   } else {
-    // Not in watering mode -> pump stays OFF
     pumpOff();
   }
 
+  // Build JSON payload
   String payload = "{";
-  payload += "\"temperature\":" + String(temperature, 1) + ",";
-  payload += "\"humidity\":" + String(humidity, 1) + ",";
+  payload += "\"temperature\":" + String(lastTemp, 1) + ",";
+  payload += "\"humidity\":" + String(lastHum, 1) + ",";
   payload += "\"light\":" + String(lightLux, 1) + ",";
   payload += "\"soil\":" + String(soilPercent) + ",";
   payload += "\"pump\":" + String(pumpIsOn ? 1 : 0);
@@ -218,15 +226,21 @@ void loop() {
 
   Serial.println("Sending: " + payload);
 
+  // POST
   WiFiClient client;
-  client.setTimeout(3000);
+  client.setTimeout(5000);
 
   HTTPClient http;
   http.setReuse(false);
-  http.setConnectTimeout(3000);
-  http.setTimeout(3000);
+  http.setConnectTimeout(5000);
+  http.setTimeout(5000);
 
-  http.begin(client, serverUrl);
+  if (!http.begin(client, serverUrl)) {
+    Serial.println("HTTP begin() failed");
+    http.end();
+    return;
+  }
+
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Connection", "close");
 
@@ -239,8 +253,10 @@ void loop() {
     Serial.print("HTTP error: ");
     Serial.println(http.errorToString(code).c_str());
   } else {
+    // Read response to fully complete the request (helps stability)
+    String resp = http.getString();
     Serial.print("Response: ");
-    Serial.println(http.getString());
+    Serial.println(resp);
   }
 
   http.end();
