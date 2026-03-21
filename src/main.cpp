@@ -21,9 +21,9 @@ const bool RELAY_ACTIVE_LOW = true;
 BH1750 lightMeter;
 DHT dht(DHT_PIN, DHT_TYPE);
 
-const char* ssid = "KGB_Mode";
-const char* password = "87654321";
-const char* serverUrl = "http://10.154.223.157:3000/api/sensors";
+const char* ssid = "SLT-4G-9585";
+const char* password = "EBDAJ2Y9MG4";
+const char* serverUrl = "http://192.168.1.106:3000/api/sensors";
 
 const uint32_t SEND_EVERY_MS = 2000;
 const uint32_t DHT_EVERY_MS  = 5000;
@@ -170,7 +170,7 @@ void loop() {
   }
 
   float lightLux = lightMeter.readLightLevel();
-  if (lightLux < 1) lightLux = 0;
+  if (lightLux < 0) lightLux = 0;
 
   int soilRaw = analogRead(SOIL_PIN);
   int soilPercent = map(soilRaw, SOIL_DRY, SOIL_WET, 0, 100);
@@ -243,3 +243,19 @@ void loop() {
 
   http.end();
 }
+
+
+// int pumpPin = 23;
+
+// void setup() {
+//   pinMode(pumpPin, OUTPUT);
+//   digitalWrite(pumpPin, HIGH); // relay not triggered → pump runs by default
+// }
+
+// void loop() {
+//   // Example: stop pump for 10 seconds
+//   digitalWrite(pumpPin, LOW);   // relay triggered → motor OFF
+//   delay(10000);                 // stop duration
+//   digitalWrite(pumpPin, HIGH);  // relay not triggered → motor ON
+//   delay(43200000);              // wait 12 hours
+// }
